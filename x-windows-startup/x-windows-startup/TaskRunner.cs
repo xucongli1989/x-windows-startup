@@ -12,7 +12,7 @@ namespace x_windows_startup
             Action<string> outputReceived,
             Action<string> errorReceived,
             Action<int> exited,
-            Action<ProcessStartInfo, string> startInfoReady)
+            Action<TaskStartContext> startInfoReady)
         {
             Process process;
             if (task.Type == StartupTaskType.Script)
@@ -44,7 +44,7 @@ namespace x_windows_startup
             return command;
         }
 
-        private static Process RunScript(string script, Action<string> outputReceived, Action<string> errorReceived, Action<int> exited, Action<ProcessStartInfo, string> startInfoReady)
+        private static Process RunScript(string script, Action<string> outputReceived, Action<string> errorReceived, Action<int> exited, Action<TaskStartContext> startInfoReady)
         {
             if (string.IsNullOrWhiteSpace(script))
             {
@@ -95,7 +95,7 @@ namespace x_windows_startup
             {
                 if (startInfoReady != null)
                 {
-                    startInfoReady(process.StartInfo, script);
+                    startInfoReady(new TaskStartContext(process.StartInfo, FormatCommandLine(process.StartInfo), script));
                 }
 
                 process.Start();
@@ -111,7 +111,7 @@ namespace x_windows_startup
             }
         }
 
-        private static Process RunProgram(string programPath, string arguments, Action<string> outputReceived, Action<string> errorReceived, Action<int> exited, Action<ProcessStartInfo, string> startInfoReady)
+        private static Process RunProgram(string programPath, string arguments, Action<string> outputReceived, Action<string> errorReceived, Action<int> exited, Action<TaskStartContext> startInfoReady)
         {
             if (string.IsNullOrWhiteSpace(programPath))
             {
@@ -154,7 +154,7 @@ namespace x_windows_startup
             {
                 if (startInfoReady != null)
                 {
-                    startInfoReady(process.StartInfo, null);
+                    startInfoReady(new TaskStartContext(process.StartInfo, FormatCommandLine(process.StartInfo), null));
                 }
 
                 process.Start();

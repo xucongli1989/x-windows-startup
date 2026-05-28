@@ -15,11 +15,16 @@ namespace x_windows_startup
         private readonly TaskStore taskStore = new TaskStore(Application.StartupPath);
         private readonly TaskLogService taskLogService = new TaskLogService(Application.StartupPath);
         private readonly AutoStartManager autoStartManager = new AutoStartManager(Application.ExecutablePath, Program.RunAllArgument);
+        private readonly bool runAllOnLoad;
+        private readonly object autoRunSyncRoot = new object();
 
         private DataGridView taskGrid;
         private Button autoStartButton;
         private LinkLabel projectHomeLink;
         private Label countLabel;
+        private bool autoRunExitRequested;
+        private bool autoRunLaunching;
+        private int pendingAutoRunTasks;
         private int dragRowIndex = -1;
         private int hoverRowIndex = -1;
 
@@ -42,15 +47,11 @@ namespace x_windows_startup
 
         public Form1(bool runAllOnLoad)
         {
+            this.runAllOnLoad = runAllOnLoad;
             InitializeComponent();
             BuildUi();
             LoadTasks();
             RefreshGrid();
-
-            if (runAllOnLoad)
-            {
-                BeginInvoke(new MethodInvoker(delegate { RunAllTasks(true); }));
-            }
         }
 
         private void BuildUi()
@@ -62,6 +63,7 @@ namespace x_windows_startup
             StartPosition = FormStartPosition.CenterScreen;
             AutoScaleMode = AutoScaleMode.Dpi;
             Font = new Font(Font.FontFamily, 11F);
+            Shown += Form1_Shown;
 
             var root = new TableLayoutPanel
             {
@@ -198,6 +200,18 @@ namespace x_windows_startup
             }
         }
 
+        private void Form1_Shown(object sender, EventArgs e)
+        {
+            if (!runAllOnLoad)
+            {
+                return;
+            }
+
+            ShowInTaskbar = false;
+            Hide();
+            BeginInvoke(new MethodInvoker(RunAutoStartTasksAndExit));
+        }
+
         private Button CreateToolbarButton(string text, int width)
         {
             return new Button
@@ -265,7 +279,7 @@ namespace x_windows_startup
 
         private void RunAllButton_Click(object sender, EventArgs e)
         {
-            RunAllTasks(false);
+            RunAllTasks(false, false);
         }
 
         private void AutoStartButton_Click(object sender, EventArgs e)
@@ -449,10 +463,30 @@ namespace x_windows_startup
             }
         }
 
-        private void RunAllTasks(bool enabledOnly)
+        private void RunAutoStartTasksAndExit()
+        {
+            lock (autoRunSyncRoot)
+            {
+                autoRunExitRequested = true;
+                autoRunLaunching = true;
+                pendingAutoRunTasks = 0;
+            }
+
+            RunAllTasks(true, true);
+
+            lock (autoRunSyncRoot)
+            {
+                autoRunLaunching = false;
+            }
+
+            TryExitAfterAutoRun();
+        }
+
+        private void RunAllTasks(bool enabledOnly, bool exitWhenFinished)
         {
             var failedCount = 0;
             var runCount = 0;
+            var skippedCount = 0;
 
             for (var i = 0; i < tasks.Count; i++)
             {
@@ -462,19 +496,33 @@ namespace x_windows_startup
                     continue;
                 }
 
+                if (IsTaskRunning(task))
+                {
+                    skippedCount++;
+                    taskLogService.AppendInfo(task, "Skipped because the task is already running.");
+                    continue;
+                }
+
                 try
                 {
-                    RunTask(task, enabledOnly ? "Auto start run" : "Test");
+                    RunTask(task, enabledOnly ? "Auto start run" : "Test", exitWhenFinished);
                     runCount++;
                 }
                 catch (Exception ex)
                 {
                     failedCount++;
-                    MessageBox.Show(
-                        "Failed to run task \"" + task.Name + "\": " + ex.Message,
-                        "Test Failed",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Error);
+                    if (enabledOnly)
+                    {
+                        taskLogService.AppendError(task, "Auto start failed: " + ex.Message);
+                    }
+                    else
+                    {
+                        MessageBox.Show(
+                            "Failed to run task \"" + task.Name + "\": " + ex.Message,
+                            "Test Failed",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Error);
+                    }
                 }
             }
 
@@ -490,14 +538,34 @@ namespace x_windows_startup
             }
             else if (!enabledOnly && failedCount == 0)
             {
-                MessageBox.Show("Test command sent for " + runCount + " task(s).", "Test All Tasks", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                var message = "Test command sent for " + runCount + " task(s).";
+                if (skippedCount > 0)
+                {
+                    message += " Skipped " + skippedCount + " running task(s).";
+                }
+
+                MessageBox.Show(message, "Test All Tasks", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
 
         private void RunTask(StartupTask task, string actionName)
         {
+            RunTask(task, actionName, false);
+        }
+
+        private void RunTask(StartupTask task, string actionName, bool exitWhenFinished)
+        {
+            taskLogService.AppendSeparator(task);
             taskLogService.AppendInfo(task, actionName + " requested for task \"" + task.Name + "\".");
             SetTaskStatus(task, "Running");
+            if (exitWhenFinished)
+            {
+                lock (autoRunSyncRoot)
+                {
+                    pendingAutoRunTasks++;
+                }
+            }
+
             try
             {
                 TaskRunner.Run(
@@ -505,15 +573,15 @@ namespace x_windows_startup
                     line => taskLogService.AppendOutput(task, line),
                     line => taskLogService.AppendError(task, line),
                     exitCode => OnTaskExited(task, exitCode),
-                    (startInfo, scriptFileContent) =>
+                    context =>
                     {
-                        taskLogService.AppendInfo(task, "Command: " + TaskRunner.FormatCommandLine(startInfo));
-                        if (!string.IsNullOrWhiteSpace(startInfo.WorkingDirectory))
+                        taskLogService.AppendInfo(task, "Command: " + context.CommandLine);
+                        if (context.StartInfo != null && !string.IsNullOrWhiteSpace(context.StartInfo.WorkingDirectory))
                         {
-                            taskLogService.AppendInfo(task, "Working directory: " + startInfo.WorkingDirectory);
+                            taskLogService.AppendInfo(task, "Working directory: " + context.StartInfo.WorkingDirectory);
                         }
 
-                        LogScriptFileContent(task, scriptFileContent);
+                        LogScriptFileContent(task, context.ScriptFileContent);
                     });
                 taskLogService.AppendInfo(task, "Process start requested successfully.");
             }
@@ -521,6 +589,11 @@ namespace x_windows_startup
             {
                 SetTaskStatus(task, "Failed");
                 taskLogService.AppendError(task, ex.Message);
+                if (exitWhenFinished)
+                {
+                    MarkAutoRunTaskFinished();
+                }
+
                 throw;
             }
         }
@@ -544,6 +617,45 @@ namespace x_windows_startup
         {
             taskLogService.AppendInfo(task, "Process exited with code " + exitCode + ".");
             SetTaskStatus(task, exitCode == 0 ? "Finished" : "Failed");
+            if (autoRunExitRequested)
+            {
+                MarkAutoRunTaskFinished();
+            }
+        }
+
+        private void MarkAutoRunTaskFinished()
+        {
+            lock (autoRunSyncRoot)
+            {
+                if (pendingAutoRunTasks > 0)
+                {
+                    pendingAutoRunTasks--;
+                }
+            }
+
+            TryExitAfterAutoRun();
+        }
+
+        private void TryExitAfterAutoRun()
+        {
+            bool shouldExit;
+            lock (autoRunSyncRoot)
+            {
+                shouldExit = autoRunExitRequested && !autoRunLaunching && pendingAutoRunTasks == 0;
+            }
+
+            if (!shouldExit || IsDisposed)
+            {
+                return;
+            }
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new MethodInvoker(Close));
+                return;
+            }
+
+            Close();
         }
 
         private void SetTaskStatus(StartupTask task, string status)

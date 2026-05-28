@@ -92,6 +92,7 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="StartupTask.cs" />
     <Compile Include="StartupTaskType.cs" />
+    <Compile Include="TaskStartContext.cs" />
     <Compile Include="TaskEditorForm.cs">
       <SubType>Form</SubType>
     </Compile>

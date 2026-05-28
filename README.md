@@ -8,6 +8,9 @@ This project was generated entirely by AI and has not gone through very strict t
 ## Preview
 ![image](./images/1.png)
 
+## Download
+[download](./release-builds/)
+
 ## Features
 
 - Add multiple startup tasks.
@@ -52,3 +55,4 @@ Important: this application is not a Windows Service. It is a normal desktop app
 
 - Windows
 - .NET Framework 4.7
+

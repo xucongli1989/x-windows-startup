@@ -30,6 +30,15 @@ namespace x_windows_startup
             Append(task, "OUT", message);
         }
 
+        public void AppendSeparator(StartupTask task)
+        {
+            lock (syncRoot)
+            {
+                Directory.CreateDirectory(logDirectory);
+                File.AppendAllText(GetLogPath(task), "======" + Environment.NewLine, new UTF8Encoding(false));
+            }
+        }
+
         public void OpenLog(StartupTask task)
         {
             var logPath = GetLogPath(task);

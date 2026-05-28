@@ -56,21 +56,36 @@ namespace x_windows_startup
         public void Save(IEnumerable<StartupTask> tasks)
         {
             var directory = Path.GetDirectoryName(dataFilePath);
-            if (!Directory.Exists(directory))
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
             {
                 Directory.CreateDirectory(directory);
             }
 
             var tempFile = dataFilePath + ".tmp";
+            var backupFile = dataFilePath + ".bak";
             var json = JsonSerializer.Serialize(tasks, JsonOptions);
             File.WriteAllText(tempFile, json, new UTF8Encoding(false));
 
-            if (File.Exists(dataFilePath))
+            try
             {
-                File.Delete(dataFilePath);
+                if (File.Exists(dataFilePath))
+                {
+                    File.Replace(tempFile, dataFilePath, backupFile, true);
+                }
+                else
+                {
+                    File.Move(tempFile, dataFilePath);
+                }
             }
+            catch
+            {
+                if (File.Exists(tempFile))
+                {
+                    File.Delete(tempFile);
+                }
 
-            File.Move(tempFile, dataFilePath);
+                throw;
+            }
         }
 
         private static JsonSerializerOptions CreateJsonOptions()
